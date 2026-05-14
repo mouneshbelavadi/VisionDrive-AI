@@ -1,11 +1,12 @@
 fastapi
-uvicorn
+uvicorn[standard]
 python-multipart
 numpy
 opencv-python-headless
---find-links https://download.pytorch.org/whl/cpu/torch_stable.html
-torch
-torchvision
+# CPU-only torch (much smaller footprint — critical for Render free tier 512MB)
+--index-url https://download.pytorch.org/whl/cpu
+torch==2.2.0+cpu
+torchvision==0.17.0+cpu
+# ultralytics uses ~300MB — keep it but use lazy loading
 ultralytics
-asyncio
 gunicorn

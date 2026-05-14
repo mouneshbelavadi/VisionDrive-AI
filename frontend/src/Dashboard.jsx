@@ -28,6 +28,8 @@ const CSS = `
   .danger-banner{margin:10px 20px;padding:10px 20px;background:linear-gradient(90deg,rgba(255,45,85,0.2),rgba(255,45,85,0.05));border:1px solid rgba(255,45,85,0.6);border-left:4px solid var(--red);border-radius:4px;display:flex;align-items:center;gap:12px;animation:dangerPulse 1.5s ease-in-out infinite;}
   @keyframes dangerPulse{0%,100%{box-shadow:0 0 0 rgba(255,45,85,0)}50%{box-shadow:0 0 20px rgba(255,45,85,0.3)}}
   .danger-text{font-family:'Orbitron',monospace;font-size:11px;font-weight:700;letter-spacing:2px;color:var(--red);text-shadow:0 0 10px rgba(255,45,85,0.7);}
+  .error-banner{margin:10px 20px;padding:10px 20px;background:linear-gradient(90deg,rgba(255,165,0,0.2),rgba(255,165,0,0.05));border:1px solid rgba(255,165,0,0.6);border-left:4px solid #ff9500;border-radius:4px;display:flex;align-items:center;gap:12px;}
+  .error-text{font-family:'Share Tech Mono',monospace;font-size:11px;color:#ff9500;}
   .controls{padding:8px 20px 10px;display:flex;align-items:center;gap:10px;}
   .file-label{display:flex;align-items:center;gap:8px;padding:8px 16px;background:rgba(0,245,255,0.08);border:1px solid rgba(0,245,255,0.3);border-radius:5px;cursor:pointer;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--cyan);transition:all 0.2s;letter-spacing:1px;}
   .file-label:hover{background:rgba(0,245,255,0.15);border-color:var(--cyan);box-shadow:0 0 12px rgba(0,245,255,0.2);}
@@ -97,6 +99,8 @@ export default function Dashboard() {
   const [danger, setDanger]     = useState(false);
   const [stats, setStats]       = useState({ fps:0, obj:0, conf:0, threat:"LOW", mode:"UPLOAD" });
   const [fileName, setFileName] = useState("");
+  const [backendError, setBackendError] = useState("");
+  const isProcessingRef = useRef(false);
 
   const segImgRef      = useRef(null);
   const bevRef         = useRef(null);
@@ -347,70 +351,112 @@ export default function Dashboard() {
     return new Promise((resolve) => {
       const video = videoRef.current;
       const canvas = captureRef.current;
-      if (!video || video.paused || video.ended) {
+      if (!video || video.paused || video.ended || !canvas) {
         resolve();
         return;
       }
 
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      canvas.width  = video.videoWidth  || 640;
+      canvas.height = video.videoHeight || 360;
       const ctx = canvas.getContext("2d");
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
       const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:8000";
       canvas.toBlob(async (blob) => {
+        if (!blob) { resolve(); return; }
         const form = new FormData();
         form.append("file", blob, "frame.jpg");
         try {
-          const res = await fetch(`${API_BASE}/predict`, { method: "POST", body: form });
-          if (res.ok) processResult(await res.json());
+          const res = await fetch(`${API_BASE}/predict`, {
+            method: "POST",
+            body: form,
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.error) {
+              setBackendError(`Backend: ${data.error}`);
+            } else {
+              setBackendError("");
+              processResult(data);
+            }
+          } else {
+            setBackendError(`Server error ${res.status} — backend may be starting up (Render cold start ~30s)`);
+          }
         } catch (err) {
           console.error("Frame capture error", err);
+          setBackendError("Cannot reach backend — CORS or server down. Check Render logs.");
         }
         resolve();
-      }, "image/jpeg", 0.6);
+      }, "image/jpeg", 0.55);
     });
   }, [processResult]);
 
 
   const handleUpload = async (e) => {
-    const file = e.target.files[0]; if (!file) return;
+    const file = e.target.files[0];
+    if (!file) return;
     setFileName(file.name);
-    setResult(null); // Reset UI
-    
+    setResult(null);
+    setBackendError("");
+
     if (file.type.startsWith("video/")) {
       const video = videoRef.current;
+      // Release previous object URL if any
+      if (video.src && video.src.startsWith("blob:")) URL.revokeObjectURL(video.src);
       video.src = URL.createObjectURL(file);
+
       video.onloadedmetadata = () => {
         setVideoActive(true);
-        video.play();
+        video.play().catch(err => console.warn("Autoplay blocked", err));
       };
+
       video.onplaying = () => {
+        if (isProcessingRef.current) return; // already looping
+        isProcessingRef.current = true;
         const loop = async () => {
-          if (video.paused || video.ended) return;
+          const v = videoRef.current;
+          if (!v || v.paused || v.ended) {
+            isProcessingRef.current = false;
+            return;
+          }
           await captureFrame();
-          setTimeout(loop, 60); // Faster processing attempt
+          // Use requestAnimationFrame-like delay – let the event loop breathe
+          setTimeout(loop, 200); // 5 fps to backend – enough for analysis
         };
         loop();
       };
 
+      video.onended = () => {
+        isProcessingRef.current = false;
+        setVideoActive(false);
+      };
 
-      video.onerror = (e) => {
-        console.error("Video error", e);
-        alert("Unsupported video format or corrupted file.");
+      video.onerror = () => {
+        isProcessingRef.current = false;
+        setBackendError("Unsupported video format or corrupted file.");
+        setVideoActive(false);
       };
       return;
     }
 
+    // Image upload
     setLoading(true);
     setVideoActive(false);
-    const form = new FormData(); form.append("file", file);
+    const form = new FormData();
+    form.append("file", file);
     const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:8000";
     try {
-      const res = await fetch(`${API_BASE}/predict`,{method:"POST",body:form});
-      if (res.ok) processResult(await res.json());
+      const res = await fetch(`${API_BASE}/predict`, { method: "POST", body: form });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.error) setBackendError(`Backend: ${data.error}`);
+        else { setBackendError(""); processResult(data); }
+      } else {
+        setBackendError(`Server error ${res.status}. Backend may be cold-starting on Render (~30s)`);
+      }
     } catch (err) {
       console.error("Upload error", err);
+      setBackendError("Cannot reach backend — CORS blocked or server is down.");
     }
     setLoading(false);
   };
@@ -429,10 +475,12 @@ export default function Dashboard() {
   };
 
   const stopVideo = () => {
+    isProcessingRef.current = false;
     if (analysisTimer.current) clearInterval(analysisTimer.current);
-    videoRef.current.pause();
+    if (videoRef.current) videoRef.current.pause();
     setVideoActive(false);
     setFileName("");
+    setBackendError("");
   };
 
   const threatColor = stats.threat==="HIGH"?"#ff2d55":stats.threat==="MEDIUM"?"#ffd60a":"#00ff88";
@@ -456,6 +504,13 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {backendError && (
+        <div className="error-banner">
+          <span style={{fontSize:18}}>⚡</span>
+          <div className="error-text">BACKEND OFFLINE: {backendError}</div>
+        </div>
+      )}
 
       {danger && (
         <div className="danger-banner">
