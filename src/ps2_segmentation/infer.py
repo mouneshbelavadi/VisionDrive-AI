@@ -7,9 +7,10 @@ import cv2
 # Use GPU if available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Load model
-model = deeplabv3_resnet50(weights=DeepLabV3_ResNet50_Weights.DEFAULT).to(device)
-model.eval()
+# # Load model (Commented out to save RAM on Render)
+# model = deeplabv3_resnet50(weights=DeepLabV3_ResNet50_Weights.DEFAULT).to(device)
+# model.eval()
+
 
 # Transforms
 preprocess = T.Compose([
